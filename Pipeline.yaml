@@ -1,47 +1,45 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: This template creates resources required to terraform-pipeline for alb-auth demo.
+Description: This template creates resources required for terraform execution via pipeline.
 
 ##############
 # Parameters #
 ##############
-
 Parameters:
   AWSAccount:
     Type: String
-    Default: '267140421046'
-
+    Default: ''
   Project:
     Type: String
-    Default: dba-demo
-
+    Default: plygneom
   BucketNameArn:
     Type: String
-    Default: obc-terraform-state-TerraformStateBucketARN
-
+    Default: <Parent stack name>-TerraformStateBucketARN
   BucketName:
     Type: String
-    Default: obc-terraform-state-TerraformStateBucketName
-
+    Default: <Parent stack name>-TerraformStateBucketName
+  SecondRepositoryName:
+    Type: String
+    Description: source code repo
+    Default: <terraform source code repo>
+  SecondRepositoryArn:
+    Type: String
+    Description: source code repo Arn
+    Default: '<arn::>'
   RepositoryName:
     Type: String
-    Default: obc-terraform-state-CodeRepository
-
+    Default: <Parent stack name>-CodeRepository
   RepositoryArn:
     Type: String
-    Default: obc-terraform-state-CodeRepositoryARN
-
+    Default: <Parent stack name>-CodeRepositoryARN
   Env:
     Type: String
     Default: dev
-
   NotificationEmailAddress:
     Type: String
-    Default: 'muthu329024@gmail.com'
-
+    Default: 'email@addresss'
 #############
 # Metadata #
 #############
-
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
@@ -56,6 +54,7 @@ Metadata:
         Parameters:
           - Project
           - NotificationEmailAddress
+          - SecondRepositoryName
       -
         Label:
           default: "Import parent stack variable values"
@@ -67,14 +66,12 @@ Metadata:
     ParameterLabels:
       AWSAccount:
         default: "AWS account to use for provisioning Resources ??"
-
 #############
 # Resources #
 #############
-
 Resources:
-
 # Pipeline Approval Notification
+
   ApprovalNotificationTopic:
     Type: "AWS::SNS::Topic"
     Properties:
@@ -89,6 +86,7 @@ Resources:
           Value: !Ref Project
 
 #CodeBuild IAM Role --full admin access
+
   CodeBuildServiceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -110,7 +108,98 @@ Resources:
         - Key: Project
           Value: !Ref Project
 
+#CodePipeline IAM ExecutionRole --
+
+  CodePipelineManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: CodePipelineSNSAccess
+            Effect: Allow
+            Action:
+              - sns:Publish
+            Resource: '*'
+          - Sid: CodePipelineCodeBuildAccess
+            Effect: Allow
+            Action:
+              - codebuild:StartBuild
+              - codebuild:StopBuild
+              - codebuild:BatchGetBuilds
+            Resource:
+              - !GetAtt BuildSpecTerraformPlan.Arn
+              - !GetAtt BuildSpecTerraformApply.Arn
+              - !GetAtt BuildSpecTerraformDestroy.Arn
+          - Sid: AllowAllUsersToListAccounts
+            Effect: Allow
+            Action:
+              - iam:ListAccountAliases
+              - iam:ListUsers
+              - iam:GetAccountSummary
+            Resource: "*"
+          - Sid: CodePipelineCodeCommitAccess
+            Effect: Allow
+            Action:
+              - codecommit:GetBranch
+              - codecommit:GetCommit
+              - codecommit:UploadArchive
+              - codecommit:GetUploadArchiveStatus
+              - codecommit:CancelUploadArchive
+            Resource:
+              - 'Fn::ImportValue':
+                  !Ref 'RepositoryArn'
+              - !Ref 'SecondRepositoryArn'
+          - Sid: CodePipelineS3ArtifactAccess
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:GetBucketVersioning
+              - s3:PutObject
+            Resource:
+              - !Sub
+                   - 'arn:aws:s3:::${StateBucket}/*'
+                   - StateBucket:
+                        'Fn::ImportValue': !Ref 'BucketName'
+              - !Sub
+                - 'arn:aws:s3:::${StateBucket}'
+                - StateBucket:
+                    'Fn::ImportValue': !Ref 'BucketName'
+      ManagedPolicyName: !Join ["-", [!Ref 'Project',!Ref 'Env',terraform,pipeline,stack,policy]]
+      Description: "CodePipeline Managed Policy"
+  CodePipelineExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - !Ref CodePipelineManagedPolicy
+      Policies:
+        - PolicyName: PassRoleToCodeBuild-InlinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action: 'iam:PassRole'
+                Effect: Allow
+                Resource: !GetAtt CodeBuildServiceRole.Arn
+      RoleName: !Join ["-", [!Ref 'Project',!Ref 'Env',CodePipeline,ExecutionRole]]
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [!Ref 'Project',!Ref 'Env',CodePipeline,ExecutionRole]]
+        - Key: Project
+          Value: !Ref Project
+
 #CodeBuild Project for terraform
+
   BuildSpecTerraformPlan:
     Type: AWS::CodeBuild::Project
     Properties:
@@ -164,96 +253,36 @@ Resources:
           Value: !Join ["-", [!Ref 'Project',!Ref 'Env',terraform,apply]]
         - Key: Project
           Value: !Ref Project
-          
-#CodePipeline IAM ExecutionRole --
-  CodePipelineManagedPolicy:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Sid: CodePipelineSNSAccess
-            Effect: Allow
-            Action:
-              - sns:Publish
-            Resource: '*'
-          - Sid: CodePipelineCodeBuildAccess
-            Effect: Allow
-            Action:
-              - codebuild:StartBuild
-              - codebuild:StopBuild
-              - codebuild:BatchGetBuilds
-            Resource:
-              - !GetAtt BuildSpecTerraformPlan.Arn
-              - !GetAtt BuildSpecTerraformApply.Arn
-          - Sid: AllowAllUsersToListAccounts
-            Effect: Allow
-            Action:
-              - iam:ListAccountAliases
-              - iam:ListUsers
-              - iam:GetAccountSummary
-            Resource: "*"
-          - Sid: CodePipelineCodeCommitAccess
-            Effect: Allow
-            Action:
-              - codecommit:GetBranch
-              - codecommit:GetCommit
-              - codecommit:UploadArchive
-              - codecommit:GetUploadArchiveStatus
-              - codecommit:CancelUploadArchive
-            Resource:
-              - 'Fn::ImportValue':
-                  !Ref 'RepositoryArn'
-          - Sid: CodePipelineS3ArtifactAccess
-            Effect: Allow
-            Action:
-              - s3:GetObject
-              - s3:GetObjectVersion
-              - s3:GetBucketVersioning
-              - s3:PutObject
-            Resource:
-              - !Sub
-                   - 'arn:aws:s3:::${StateBucket}/*'
-                   - StateBucket:
-                        'Fn::ImportValue': !Ref 'BucketName'
-              - !Sub
-                - 'arn:aws:s3:::${StateBucket}'
-                - StateBucket:
-                    'Fn::ImportValue': !Ref 'BucketName'
-      ManagedPolicyName: !Join ["-", [!Ref 'Project',!Ref 'Env',terraform,pipeline,stack,policy]]
-      Description: "CodePipeline Managed Policy"
 
-  CodePipelineExecutionRole:
-    Type: 'AWS::IAM::Role'
+  BuildSpecTerraformDestroy:
+    Type: AWS::CodeBuild::Project
     Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - codepipeline.amazonaws.com
-            Action:
-              - 'sts:AssumeRole'
-      Path: /
-      ManagedPolicyArns:
-        - !Ref CodePipelineManagedPolicy
-      Policies:
-        - PolicyName: PassRoleToCodeBuild-InlinePolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Action: 'iam:PassRole'
-                Effect: Allow
-                Resource: !GetAtt CodeBuildServiceRole.Arn
-      RoleName: !Join ["-", [!Ref 'Project',!Ref 'Env',CodePipeline,ExecutionRole]]
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: 'codebuild/Invoke-TerraformDestroy.yaml'
+      Environment:
+        ComputeType: "BUILD_GENERAL1_SMALL"
+        Image: "aws/codebuild/standard:4.0"
+        Type: "LINUX_CONTAINER"
+        EnvironmentVariables:
+          - Name: ENV_NAME
+            Value: !Ref 'Env'
+          - Name: PROJECT
+            Value: !Ref 'Project'
+      Name: !Join ["-", [!Ref 'Project',!Ref 'Env',terraform,destroy]]
+      Description: Infra Terraform Destroy
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      TimeoutInMinutes: 300
       Tags:
         - Key: Name
-          Value: !Join ["-", [!Ref 'Project',!Ref 'Env',CodePipeline,ExecutionRole]]
+          Value: !Join ["-", [!Ref 'Project',!Ref 'Env',terraform,destroy]]
         - Key: Project
           Value: !Ref Project
 
 #CodePipeline
+
   TerraformInfrastructurePipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
@@ -265,9 +294,9 @@ Resources:
       Name: !Join ["-", [!Ref 'Project',!Ref 'Env',terraform,infrastructure,stack]]
       RoleArn: !GetAtt CodePipelineExecutionRole.Arn
       Stages:
-        - Name: CodeRepo
+        - Name: GetCodeRepo
           Actions:
-            - Name: CodeCommitSource
+            - Name: ConfigSource
               ActionTypeId:
                 Category: Source
                 Owner: AWS
@@ -280,8 +309,24 @@ Resources:
                 BranchName: master
                 PollForSourceChanges: false
               OutputArtifacts:
-                - Name: CodeCommitSourceArtifact
+                - Name: ConfigSourceArtifact
               RunOrder: 1
+
+            - Name: CodeSource
+              ActionTypeId:
+                  Category: Source
+                  Owner: AWS
+                  Provider: CodeCommit
+                  Version: '1'
+              Configuration:
+                  RepositoryName: !Ref 'SecondRepositoryName'
+                  BranchName: master
+                  PollForSourceChanges: false
+                  #OAuthToken: !Ref GithubOAuthToken
+              OutputArtifacts:
+                  - Name: CodeSourceArtifact
+              RunOrder: '2'
+
         - Name: TerraformPlan
           Actions:
             - Name: TerraformPlan
@@ -292,12 +337,15 @@ Resources:
                 Version: '1'
               Configuration:
                 ProjectName: !Ref BuildSpecTerraformPlan
+                PrimarySource: ConfigSourceArtifact
               Namespace: PlanValidation
               InputArtifacts:
-                - Name: CodeCommitSourceArtifact
+                - Name: ConfigSourceArtifact
+                - Name: CodeSourceArtifact
               OutputArtifacts:
                 - Name: TerraformPlan
               RunOrder: 1
+
         - Name: Approval
           Actions:
             - Name:  ReviewAndApprove
@@ -309,6 +357,7 @@ Resources:
               Configuration:
                 NotificationArn: !Ref ApprovalNotificationTopic
               RunOrder: 1
+
         - Name: TerraformApply
           Actions:
             - Name: TerraformApply
@@ -319,14 +368,111 @@ Resources:
                 Version: '1'
               Configuration:
                 ProjectName: !Ref BuildSpecTerraformApply
-                PrimarySource: CodeCommitSourceArtifact
+                PrimarySource: ConfigSourceArtifact
               InputArtifacts:
-                - Name: CodeCommitSourceArtifact
+                - Name: ConfigSourceArtifact
+                - Name: CodeSourceArtifact
                 - Name: TerraformPlan
               RunOrder: 1
       Tags:
         - Key: Name
           Value: !Join ["-", [!Ref 'Project',!Ref 'Env',terraform,stack]]
+        - Key: Project
+          Value: !Ref Project
+
+  TerraformDestroyPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Location:
+          'Fn::ImportValue':
+            !Ref 'BucketName'
+        Type: S3
+      Name: !Join ["-", [!Ref 'Project',!Ref 'Env',terraform,infra,destroy,stack]]
+      RoleArn: !GetAtt CodePipelineExecutionRole.Arn
+      Stages:
+        - Name: GetCodeRepo
+          Actions:
+            - Name: ConfigSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: '1'
+              Configuration:
+                RepositoryName:
+                  'Fn::ImportValue':
+                    !Ref 'RepositoryName'
+                BranchName: master
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: ConfigSourceArtifact
+              RunOrder: 1
+
+            - Name: CodeSource
+              ActionTypeId:
+                  Category: Source
+                  Owner: AWS
+                  Provider: CodeCommit
+                  Version: '1'
+              Configuration:
+                  RepositoryName: !Ref 'SecondRepositoryName'
+                  BranchName: master
+                  PollForSourceChanges: false
+                  #OAuthToken: !Ref GithubOAuthToken
+              OutputArtifacts:
+                  - Name: CodeSourceArtifact
+              RunOrder: '2'
+
+        - Name: TerraformPlan
+          Actions:
+            - Name: TerraformPlan
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref BuildSpecTerraformPlan
+                PrimarySource: ConfigSourceArtifact
+              Namespace: PlanValidation
+              InputArtifacts:
+                - Name: ConfigSourceArtifact
+                - Name: CodeSourceArtifact
+              OutputArtifacts:
+                - Name: TerraformPlan
+              RunOrder: 1
+
+        - Name: Approval
+          Actions:
+            - Name:  DestroyResource
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Version: '1'
+                Provider: Manual
+              Configuration:
+                NotificationArn: !Ref ApprovalNotificationTopic
+              RunOrder: 1
+
+        - Name: TerraformDestroy
+          Actions:
+            - Name: TerraformDestroy
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref BuildSpecTerraformDestroy
+                PrimarySource: ConfigSourceArtifact
+              InputArtifacts:
+                - Name: ConfigSourceArtifact
+                - Name: CodeSourceArtifact
+              RunOrder: 1
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [!Ref 'Project',!Ref 'Env',terraform,infra,destroy,stack]]
         - Key: Project
           Value: !Ref Project
 
@@ -355,11 +501,16 @@ Outputs:
     Value: !GetAtt BuildSpecTerraformPlan.Arn
     Export:
       Name: !Sub ${AWS::StackName}-BuildSpecTerraformPlan
+  BuildSpecTerraformDestroy:
+    Description: CodeBuild BuildSpec for TerraformDestroy
+    Value: !GetAtt BuildSpecTerraformDestroy.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-BuildSpecTerraformDestroy
   BuildSpecTerraformApply:
     Description: CodeBuild BuildSpec for TerraformApply
     Value: !GetAtt BuildSpecTerraformApply.Arn
     Export:
-      Name: !Sub ${AWS::StackName}-BuildSpecTerraformApply       
+      Name: !Sub ${AWS::StackName}-BuildSpecTerraformApply
 
 #CodePipeline ExecutionRole
   CodePipelineExecutionRole:

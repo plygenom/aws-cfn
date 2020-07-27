@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: Deploys S3 Bucket and DynamoDB table for OBC terraform-state 
+Description: Deploys S3 Bucket,DynamoDB table, ECR repo and codecommit repo...
 
 ##############
 # Parameters #
