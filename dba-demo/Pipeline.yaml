@@ -1,0 +1,374 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: This template creates resources required to terraform-pipeline for alb-auth demo.
+
+##############
+# Parameters #
+##############
+
+Parameters:
+  AWSAccount:
+    Type: String
+    Default: '267140421046'
+
+  Project:
+    Type: String
+    Default: dba-demo
+
+  BucketNameArn:
+    Type: String
+    Default: obc-terraform-state-TerraformStateBucketARN
+
+  BucketName:
+    Type: String
+    Default: obc-terraform-state-TerraformStateBucketName
+
+  RepositoryName:
+    Type: String
+    Default: obc-terraform-state-CodeRepository
+
+  RepositoryArn:
+    Type: String
+    Default: obc-terraform-state-CodeRepositoryARN
+
+  Env:
+    Type: String
+    Default: dev
+
+  NotificationEmailAddress:
+    Type: String
+    Default: 'muthu329024@gmail.com'
+
+#############
+# Metadata #
+#############
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: "Environment-Specific Configuration"
+        Parameters:
+          - Env
+      -
+        Label:
+          default: "Common Configuration"
+        Parameters:
+          - Project
+          - NotificationEmailAddress
+      -
+        Label:
+          default: "Import parent stack variable values"
+        Parameters:
+          - RepositoryArn
+          - BucketNameArn
+          - RepositoryName
+          - BucketName
+    ParameterLabels:
+      AWSAccount:
+        default: "AWS account to use for provisioning Resources ??"
+
+#############
+# Resources #
+#############
+
+Resources:
+
+# Pipeline Approval Notification
+  ApprovalNotificationTopic:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      Subscription:
+        - Endpoint: !Ref NotificationEmailAddress
+          Protocol: email
+      TopicName: !Join ["-", [!Ref 'Project',!Ref 'Env',pipelineapproval]]
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [!Ref 'Project',!Ref 'Env',pipelineapproval]]
+        - Key: Project
+          Value: !Ref Project
+
+#CodeBuild IAM Role --full admin access
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: '/'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AdministratorAccess'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+      RoleName: !Join ["-", [!Ref 'Project',!Ref 'Env',CodeBuild,ServiceRole]]
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [!Ref 'Project',!Ref 'Env',CodeBuild,ServiceRole]]
+        - Key: Project
+          Value: !Ref Project
+
+#CodeBuild Project for terraform
+  BuildSpecTerraformPlan:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: 'codebuild/Invoke-TerraformPlan.yaml'
+      Environment:
+        ComputeType: "BUILD_GENERAL1_SMALL"
+        Image: "aws/codebuild/standard:4.0"
+        Type: "LINUX_CONTAINER"
+        EnvironmentVariables:
+          - Name: ENV_NAME
+            Value: !Ref 'Env'
+          - Name: PROJECT
+            Value: !Ref 'Project'
+      Name: !Join ["-", [!Ref 'Project',!Ref 'Env',terraform,plan]]
+      Description: Infra Terraform Plan
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      TimeoutInMinutes: 300
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [!Ref 'Project',!Ref 'Env',terraform,plan]]
+        - Key: Project
+          Value: !Ref Project        
+
+  BuildSpecTerraformApply:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: 'codebuild/Invoke-TerraformApply.yaml'
+      Environment:
+        ComputeType: "BUILD_GENERAL1_SMALL"
+        Image: "aws/codebuild/standard:4.0"
+        Type: "LINUX_CONTAINER"
+        EnvironmentVariables:
+          - Name: ENV_NAME
+            Value: !Ref 'Env'
+          - Name: PROJECT
+            Value: !Ref 'Project'
+      Name: !Join ["-", [!Ref 'Project',!Ref 'Env',terraform,apply]]
+      Description: Infra Terraform Apply
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      TimeoutInMinutes: 300
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [!Ref 'Project',!Ref 'Env',terraform,apply]]
+        - Key: Project
+          Value: !Ref Project
+          
+#CodePipeline IAM ExecutionRole --
+  CodePipelineManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: CodePipelineSNSAccess
+            Effect: Allow
+            Action:
+              - sns:Publish
+            Resource: '*'
+          - Sid: CodePipelineCodeBuildAccess
+            Effect: Allow
+            Action:
+              - codebuild:StartBuild
+              - codebuild:StopBuild
+              - codebuild:BatchGetBuilds
+            Resource:
+              - !GetAtt BuildSpecTerraformPlan.Arn
+              - !GetAtt BuildSpecTerraformApply.Arn
+          - Sid: AllowAllUsersToListAccounts
+            Effect: Allow
+            Action:
+              - iam:ListAccountAliases
+              - iam:ListUsers
+              - iam:GetAccountSummary
+            Resource: "*"
+          - Sid: CodePipelineCodeCommitAccess
+            Effect: Allow
+            Action:
+              - codecommit:GetBranch
+              - codecommit:GetCommit
+              - codecommit:UploadArchive
+              - codecommit:GetUploadArchiveStatus
+              - codecommit:CancelUploadArchive
+            Resource:
+              - 'Fn::ImportValue':
+                  !Ref 'RepositoryArn'
+          - Sid: CodePipelineS3ArtifactAccess
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:GetBucketVersioning
+              - s3:PutObject
+            Resource:
+              - !Sub
+                   - 'arn:aws:s3:::${StateBucket}/*'
+                   - StateBucket:
+                        'Fn::ImportValue': !Ref 'BucketName'
+              - !Sub
+                - 'arn:aws:s3:::${StateBucket}'
+                - StateBucket:
+                    'Fn::ImportValue': !Ref 'BucketName'
+      ManagedPolicyName: !Join ["-", [!Ref 'Project',!Ref 'Env',terraform,pipeline,stack,policy]]
+      Description: "CodePipeline Managed Policy"
+
+  CodePipelineExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - !Ref CodePipelineManagedPolicy
+      Policies:
+        - PolicyName: PassRoleToCodeBuild-InlinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action: 'iam:PassRole'
+                Effect: Allow
+                Resource: !GetAtt CodeBuildServiceRole.Arn
+      RoleName: !Join ["-", [!Ref 'Project',!Ref 'Env',CodePipeline,ExecutionRole]]
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [!Ref 'Project',!Ref 'Env',CodePipeline,ExecutionRole]]
+        - Key: Project
+          Value: !Ref Project
+
+#CodePipeline
+  TerraformInfrastructurePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Location:
+          'Fn::ImportValue':
+            !Ref 'BucketName'
+        Type: S3
+      Name: !Join ["-", [!Ref 'Project',!Ref 'Env',terraform,infrastructure,stack]]
+      RoleArn: !GetAtt CodePipelineExecutionRole.Arn
+      Stages:
+        - Name: CodeRepo
+          Actions:
+            - Name: CodeCommitSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: '1'
+              Configuration:
+                RepositoryName:
+                  'Fn::ImportValue':
+                    !Ref 'RepositoryName'
+                BranchName: master
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: CodeCommitSourceArtifact
+              RunOrder: 1
+        - Name: TerraformPlan
+          Actions:
+            - Name: TerraformPlan
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref BuildSpecTerraformPlan
+              Namespace: PlanValidation
+              InputArtifacts:
+                - Name: CodeCommitSourceArtifact
+              OutputArtifacts:
+                - Name: TerraformPlan
+              RunOrder: 1
+        - Name: Approval
+          Actions:
+            - Name:  ReviewAndApprove
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Version: '1'
+                Provider: Manual
+              Configuration:
+                NotificationArn: !Ref ApprovalNotificationTopic
+              RunOrder: 1
+        - Name: TerraformApply
+          Actions:
+            - Name: TerraformApply
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref BuildSpecTerraformApply
+                PrimarySource: CodeCommitSourceArtifact
+              InputArtifacts:
+                - Name: CodeCommitSourceArtifact
+                - Name: TerraformPlan
+              RunOrder: 1
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [!Ref 'Project',!Ref 'Env',terraform,stack]]
+        - Key: Project
+          Value: !Ref Project
+
+###########
+# Outputs #
+###########
+Outputs:
+
+# Pipeline Approval Notification
+  ApprovalNotificationTopicName:
+     Description: Approval notification topic name
+     Value: !GetAtt ApprovalNotificationTopic.TopicName
+     Export:
+       Name: !Sub ${AWS::StackName}-ApprovalNotificationTopicName
+
+#CodeBuild IAM Role --full admin access
+  CodeBuildServiceRole:
+    Description: CodeBuild Service Role Arn
+    Value: !GetAtt CodeBuildServiceRole.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-CodeBuildServiceRole
+
+#CodeBuild Project for terraform
+  BuildSpecTerraformPlan:
+    Description: CodeBuild BuildSpec for TerraformPlan
+    Value: !GetAtt BuildSpecTerraformPlan.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-BuildSpecTerraformPlan
+  BuildSpecTerraformApply:
+    Description: CodeBuild BuildSpec for TerraformApply
+    Value: !GetAtt BuildSpecTerraformApply.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-BuildSpecTerraformApply       
+
+#CodePipeline ExecutionRole
+  CodePipelineExecutionRole:
+    Description: CodePipeline Execution Role Arn
+    Value: !GetAtt CodePipelineExecutionRole.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-CodePipelineExecutionRole
+  TerraformPipelineVersion:
+    Description: CodePipeline Version
+    Value: !GetAtt TerraformInfrastructurePipeline.Version
+    Export:
+      Name: !Sub ${AWS::StackName}-TerraformPipelineVersion
